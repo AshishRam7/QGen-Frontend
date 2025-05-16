@@ -13,7 +13,7 @@ const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
 const { Panel } = Collapse;
 
-const API_BASE_URL = process.env.REACT_APP_QUESTION_GEN_API_URL || 'http://localhost:8002';
+const API_BASE_URL = 'https://qgen-backend.onrender.com/';
 
 const initialFormValues = {
   academic_level: "Undergraduate",
