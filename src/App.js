@@ -14,6 +14,7 @@ const { Option } = Select;
 const { Panel } = Collapse;
 
 const API_BASE_URL = 'https://qgen-backend.onrender.com';
+//const API_BASE_URL = 'http://localhost:8002'; // Local development URL
 
 const initialFormValues = {
   academic_level: "Undergraduate",
