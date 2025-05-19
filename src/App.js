@@ -37,6 +37,8 @@ function App() {
     status: '', message: '', errorDetails: null, jobParams: null,
     originalFilename: null, currentQuestion: null, currentEvaluations: null,
     regenerationAttemptsMade: 0, maxRegenerationAttempts: 15, finalResult: null,
+    generation_context_snippets_for_display: null, // Added for richer current context
+    answerability_context_snippets_for_display: null, // Added for richer current context
   };
   const [jobDetails, setJobDetails] = useState(initialJobDetails);
 
@@ -61,16 +63,16 @@ function App() {
     } else {
       setFile(null);
     }
-    return false;
+    return false; // Prevent antd default upload
   };
 
   const resetJobState = () => {
     setJobId(null);
-    setJobDetails(initialJobDetails);
+    setJobDetails(initialJobDetails); // Resets to the full initial state including new snippet fields
     setError('');
     setUserFeedback("");
-    setFile(null); // Also reset the file
-    form.resetFields(); // Reset the antd form
+    setFile(null); 
+    form.resetFields(); 
     if (pollingIntervalRef.current) {
       clearInterval(pollingIntervalRef.current);
     }
@@ -83,7 +85,7 @@ function App() {
         const newState = {
             status: data.status !== undefined ? data.status : prev.status,
             message: data.message !== undefined ? data.message : prev.message,
-            errorDetails: data.error_details !== undefined ? data.error_details : prev.errorDetails, // Use !== undefined to allow null
+            errorDetails: data.error_details !== undefined ? data.error_details : prev.errorDetails,
             jobParams: data.job_params !== undefined ? data.job_params : prev.jobParams,
             originalFilename: data.original_filename !== undefined ? data.original_filename : prev.originalFilename,
             currentQuestion: data.current_question !== undefined ? data.current_question : prev.currentQuestion,
@@ -91,6 +93,9 @@ function App() {
             regenerationAttemptsMade: data.regeneration_attempts_made !== undefined ? data.regeneration_attempts_made : prev.regenerationAttemptsMade,
             maxRegenerationAttempts: data.max_regeneration_attempts !== undefined ? data.max_regeneration_attempts : prev.maxRegenerationAttempts,
             finalResult: data.final_result !== undefined ? data.final_result : prev.finalResult,
+            // Update new snippet fields
+            generation_context_snippets_for_display: data.generation_context_snippets_for_display !== undefined ? data.generation_context_snippets_for_display : prev.generation_context_snippets_for_display,
+            answerability_context_snippets_for_display: data.answerability_context_snippets_for_display !== undefined ? data.answerability_context_snippets_for_display : prev.answerability_context_snippets_for_display,
         };
         console.log('[App.js] New jobDetails state constructed:', JSON.stringify(newState, null, 2));
         return newState;
@@ -105,9 +110,12 @@ function App() {
       setIsLoading(true);
     }
 
+    // Manage general error message based on job status
     if (data.status === 'error' && (data.message || data.error_details)) {
-        setError(data.message || data.error_details);
-    } else if (data.status !== 'error' && error) { // Clear general error if status is not error
+        // Prefer job-specific error message if available
+        setError(data.error_details || data.message); 
+    } else if (data.status !== 'error' && error && !['uploading', 'queued', 'processing_setup', 'generating_initial_question', 'regenerating_question', 'finalizing'].includes(data.status)) {
+        // Clear general error if job is progressing beyond initial error states or is in a stable non-error state
         setError('');
     }
   };
@@ -118,11 +126,10 @@ function App() {
       setError('Please upload a PDF file.');
       return;
     }
-    resetJobState(); // Reset most states, but form values are from `values`
+    resetJobState(); 
     setIsLoading(true);
     setUploading(true);
     setError('');
-    // Set initial status for UI feedback
     setJobDetails(prev => ({ ...initialJobDetails, status: 'uploading', message: 'Uploading PDF and submitting job...' }));
 
 
@@ -138,14 +145,13 @@ function App() {
       });
       setUploading(false);
       setJobId(response.data.job_id);
-      // Update jobDetails with info from this response before polling starts
       setJobDetails(prev => ({ ...prev, status: 'queued', message: response.data.message || 'Job submitted, processing...' }));
       startPolling(response.data.job_id);
     } catch (err) {
       setUploading(false);
       setIsLoading(false);
       const errorMsg = err.response?.data?.detail || err.message || 'Failed to submit job.';
-      setError(errorMsg);
+      setError(errorMsg); // Set general error for submission failure
       setJobDetails(prev => ({ ...prev, status: 'error', message: errorMsg, errorDetails: errorMsg }));
       console.error('Submit error:', err);
     }
@@ -161,14 +167,13 @@ function App() {
       console.error('[App.js] Error fetching job status during polling:', err);
       const errorMsg = err.response?.data?.detail || err.message || 'Error fetching job status.';
       if (err.response?.status === 404) {
-        setError(`Job ID ${currentJobId} not found. Polling stopped.`);
+        setError(`Job ID ${currentJobId} not found. Polling stopped.`); // Set general error
         setJobDetails(prev => ({ ...prev, status: 'error', message: 'Job not found.', errorDetails: errorMsg }));
         setIsLoading(false);
         if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-      } else {
-        // For other polling errors, you might want to show a less intrusive error or just log
-        // setError(`Polling error: ${errorMsg}. Retrying...`); // This might be too noisy
       }
+      // For other polling errors, we don't set the main 'error' to avoid being too noisy,
+      // relying on the jobDetails.message or jobDetails.errorDetails if the backend reports a job error.
     }
   };
 
@@ -185,21 +190,20 @@ function App() {
         return;
     }
     setIsLoading(true);
-    setError('');
+    setError(''); // Clear general error before new action
     setJobDetails(prev => ({...prev, status: 'regenerating_question', message: 'Submitting feedback and regenerating question...'}));
 
     try {
         const response = await axios.post(`${API_BASE_URL}/regenerate-question/${jobId}`, { user_feedback: userFeedback });
         console.log('[App.js] Raw /regenerate-question response data:', JSON.stringify(response.data, null, 2));
-        updateJobDetailsState(response.data);
+        updateJobDetailsState(response.data); // This will set status, message, and potentially errorDetails from backend
         setUserFeedback(""); 
     } catch (err) {
         console.error('[App.js] Error regenerating question:', err);
         const errorMsg = err.response?.data?.detail || err.message || 'Failed to regenerate question.';
-        setError(errorMsg);
-        // Revert status to allow user to try again or see error
+        // Update jobDetails to reflect the error from regeneration attempt itself
         setJobDetails(prev => ({...prev, status: 'awaiting_feedback', message: `Regeneration failed: ${errorMsg}`, errorDetails: errorMsg}));
-        setIsLoading(false);
+        setIsLoading(false); // Ensure loading is stopped on error
     }
   };
 
@@ -209,7 +213,7 @@ function App() {
         return;
     }
     setIsLoading(true);
-    setError('');
+    setError(''); // Clear general error
     setJobDetails(prev => ({...prev, status: 'finalizing', message: 'Finalizing question...'}));
 
     try {
@@ -219,7 +223,6 @@ function App() {
     } catch (err) {
         console.error('[App.js] Error finalizing question:', err);
         const errorMsg = err.response?.data?.detail || err.message || 'Failed to finalize question.';
-        setError(errorMsg);
         setJobDetails(prev => ({...prev, status: 'awaiting_feedback', message: `Finalization failed: ${errorMsg}`, errorDetails: errorMsg}));
         setIsLoading(false);
     }
@@ -248,16 +251,16 @@ function App() {
     }
   };
 
-  const renderContextSnippets = (snippets, type) => {
+  const renderContextSnippets = (snippets, typeKey) => {
     if (!snippets || snippets.length === 0) {
-      return <Paragraph>No {type} context snippets available.</Paragraph>;
+      return <Paragraph>No {typeKey.replace(/-/g, ' ')} context snippets available.</Paragraph>;
     }
     return (
       <Collapse accordion>
         {snippets.map((snippet, index) => (
           <Panel
             header={`Snippet ${index + 1} (Score: ${snippet.score?.toFixed(4) || 'N/A'}) - Source: ${snippet.payload?.metadata?.source_file || 'N/A'}`}
-            key={`${type}-${snippet.id || snippet.payload?.metadata?.final_chunk_index || index}`} // Use more stable key if id is missing
+            key={`${typeKey}-${snippet.id || snippet.payload?.metadata?.final_chunk_index || index}`}
           >
              {snippet.payload?.metadata?.header_trail && snippet.payload.metadata.header_trail.length > 0 &&
                 <Paragraph><Text strong>Header Trail:</Text> {snippet.payload.metadata.header_trail.join(' -> ')}</Paragraph>
@@ -273,9 +276,11 @@ function App() {
     if (!allSnippets || allSnippets.length === 0) {
         return <Paragraph>No context snippets available to check for image descriptions.</Paragraph>;
     }
+    // Assuming allSnippets is a list of objects where each object has a `payload.text`
     const imageDescriptionSnippets = allSnippets.filter(snippet =>
-        snippet.payload?.text && snippet.payload.text.includes("**Figure Description (Generated by Moondream):**")
+        snippet.payload?.text && snippet.payload.text.includes("**Moondream AI Description:**") // Updated search string
     );
+
     if (imageDescriptionSnippets.length === 0) {
         return <Paragraph>No distinct image descriptions found in the provided context snippets.</Paragraph>;
     }
@@ -284,12 +289,16 @@ function App() {
             {imageDescriptionSnippets.map((snippet, index) => {
                 let title = `Image Description ${index + 1}`;
                 const titleMatch = snippet.payload.text.match(/^###\s*(.*)/m);
-                if (titleMatch && titleMatch[1]) title = titleMatch[1].replace(/\*\*Figure Description.*?---/, '').trim();
+                if (titleMatch && titleMatch[1]) {
+                    // Clean up the title: remove the Moondream part if it's part of the ### line
+                    title = titleMatch[1].replace(/\*\*Moondream AI Description.*?\*\*/i, '').replace(/---.*/,'').trim();
+                }
                 
-                const descriptionMatch = snippet.payload.text.match(/\*\*Figure Description \(Generated by Moondream\):\*\*\s*([\s\S]*?)\s*---/m);
+                // Updated regex to capture text after "**Moondream AI Description:**" and before "---"
+                const descriptionMatch = snippet.payload.text.match(/\*\*Moondream AI Description:\*\*\s*([\s\S]*?)\s*---/m);
                 const descriptionText = descriptionMatch && descriptionMatch[1] ? descriptionMatch[1].trim() : "Could not extract description.";
                 
-                const originalRefMatch = snippet.payload.text.match(/\*\*Original Image Reference.*?\*\*\s*`([^`]+)`/m);
+                const originalRefMatch = snippet.payload.text.match(/\*\*Original Markdown Reference.*?\*\*\s*`([^`]+)`/m);
                 const originalRef = originalRefMatch && originalRefMatch[1] ? originalRefMatch[1] : "N/A";
                 
                 return (
@@ -312,7 +321,7 @@ function App() {
     <div className="container">
       <Card>
         <Title level={2} style={{ textAlign: 'center', marginBottom: 30 }}>
-          Bloom's taxnonomy based question generation
+          Bloom's Taxonomy Based Question Generation
         </Title>
 
         {(!jobId || jobDetails.status === 'error' || jobDetails.status === 'completed') && (
@@ -378,7 +387,7 @@ function App() {
               </Tag>
             </Paragraph>
             <Paragraph><strong>Message:</strong> {jobDetails.message || 'Waiting for updates...'}</Paragraph>
-            {jobDetails.jobParams && <Paragraph><strong>Marks:</strong> {jobDetails.jobParams.marks_for_question}</Paragraph>}
+            {jobDetails.jobParams?.marks_for_question && <Paragraph><strong>Marks:</strong> {jobDetails.jobParams.marks_for_question}</Paragraph>}
             {(isLoading && !['awaiting_feedback', 'max_attempts_reached', 'completed', 'error'].includes(jobDetails.status)) && <Progress percent={50} status="active" showInfo={false} />}
             {jobDetails.errorDetails && <Alert message={<><strong>Error Details:</strong> {jobDetails.errorDetails}</>} type="error" showIcon style={{marginTop:15}} /> }
             
@@ -395,10 +404,10 @@ function App() {
                     {jobDetails.currentEvaluations.generation_status_message && (
                         <Alert message={<><Text strong>Outcome:</Text> {jobDetails.currentEvaluations.generation_status_message}</>} type="info" showIcon style={{marginBottom:15}}/>
                     )}
-                     {jobDetails.currentEvaluations.error_message && ( // Error from LLM question generation attempt
+                     {jobDetails.currentEvaluations.error_message && ( 
                         <Alert message={<><Text strong>LLM Generation Error:</Text> {jobDetails.currentEvaluations.error_message}</>} type="warning" showIcon style={{marginBottom:15}}/>
                     )}
-                    {jobDetails.currentEvaluations.error_message_regeneration && ( // Error specifically from regeneration step
+                    {jobDetails.currentEvaluations.error_message_regeneration && ( 
                         <Alert message={<><Text strong>Regeneration Error:</Text> {jobDetails.currentEvaluations.error_message_regeneration}</>} type="warning" showIcon style={{marginBottom:15}}/>
                     )}
                     <div className="metric-item">
@@ -414,16 +423,28 @@ function App() {
                         <div className="metric-item">
                           <Text strong>Reasoning:</Text> {jobDetails.currentEvaluations.llm_answerability.reasoning || 'N/A'}
                         </div>
+                         {/* Display Answerability Context Snippets for current question */}
+                        {jobDetails.answerability_context_snippets_for_display && jobDetails.answerability_context_snippets_for_display.length > 0 && (
+                          <div style={{marginTop: 15}}>
+                            <Text strong>Context Used for Answerability Check (Top 5 shown):</Text>
+                            {renderContextSnippets(jobDetails.answerability_context_snippets_for_display.slice(0,5), "current-ans-ctx")}
+                          </div>
+                        )}
                       </>
                     )}
                     {jobDetails.currentEvaluations.qualitative_metrics && Object.entries(jobDetails.currentEvaluations.qualitative_metrics).map(([key, value]) => (
-                       key !== "error_message" && // Don't render nested error_message here
+                       key !== "error_message" && key !== "reasoning" && // Don't render nested error_message or general reasoning here
                        <div className="metric-item" key={key}>
                          <Text strong>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</Text>
                          {typeof value === 'boolean' ? (value ? <Tag color="success">PASS</Tag> : <Tag color="error">FAIL</Tag>) : String(value)}
                        </div>
                     ))}
-                    {jobDetails.currentEvaluations.qualitative_metrics?.error_message && ( // Error from qualitative eval LLM
+                     {jobDetails.currentEvaluations.qualitative_metrics?.reasoning && (
+                        <div className="metric-item">
+                            <Text strong>Qualitative Eval Reasoning:</Text> {jobDetails.currentEvaluations.qualitative_metrics.reasoning}
+                        </div>
+                    )}
+                    {jobDetails.currentEvaluations.qualitative_metrics?.error_message && ( 
                         <Alert message={<><Text strong>Qualitative Eval LLM Error:</Text> {jobDetails.currentEvaluations.qualitative_metrics.error_message}</>} type="warning" showIcon style={{marginTop:15}}/>
                     )}
                   </>
@@ -448,7 +469,7 @@ function App() {
                                 loading={isLoading && jobDetails.status === 'regenerating_question'}
                                 disabled={!canRegenerate || !userFeedback.trim() || isLoading}
                             >
-                                Regenerate ({ (jobDetails.maxRegenerationAttempts || 0) - (jobDetails.regenerationAttemptsMade || 0)} left)
+                                Regenerate ({ (jobDetails.maxRegenerationAttempts || MAX_INTERACTIVE_REGENERATION_ATTEMPTS) - (jobDetails.regenerationAttemptsMade || 0)} left)
                             </Button>
                         </Col>
                         <Col>
@@ -469,7 +490,7 @@ function App() {
                 </div>
                 )}
               </div>
-            )} {/* End currentQuestion block */}
+            )} 
             
             {jobDetails.finalResult && jobDetails.status === 'completed' && (
               <Card title="Final Result" className="result-card" style={{marginTop: 20}}>
@@ -483,7 +504,6 @@ function App() {
                     {jobDetails.finalResult.evaluation_metrics.generation_status_message && (
                         <Alert message={<><Text strong>Outcome:</Text> {jobDetails.finalResult.evaluation_metrics.generation_status_message}</>} type="info" showIcon style={{marginBottom:15}}/>
                     )}
-                    {/* Render other metrics similar to currentEvaluations block */}
                      <div className="metric-item">
                       <Text strong>QSTS Score:</Text> {jobDetails.finalResult.evaluation_metrics.qsts_score?.toFixed(4) || 'N/A'}
                     </div>
@@ -500,27 +520,33 @@ function App() {
                       </>
                     )}
                     {jobDetails.finalResult.evaluation_metrics.qualitative_metrics && Object.entries(jobDetails.finalResult.evaluation_metrics.qualitative_metrics).map(([key, value]) => (
-                       key !== "error_message" &&
+                       key !== "error_message" && key !== "reasoning" &&
                        <div className="metric-item" key={`final-${key}`}>
                          <Text strong>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</Text>
                          {typeof value === 'boolean' ? (value ? <Tag color="success">PASS</Tag> : <Tag color="error">FAIL</Tag>) : String(value)}
                        </div>
                     ))}
+                    {jobDetails.finalResult.evaluation_metrics.qualitative_metrics?.reasoning && (
+                        <div className="metric-item">
+                            <Text strong>Qualitative Eval Reasoning:</Text> {jobDetails.finalResult.evaluation_metrics.qualitative_metrics.reasoning}
+                        </div>
+                    )}
                     </>
                  )}
                  <Paragraph><Text strong>Total regenerations attempts for this result:</Text> {jobDetails.finalResult.total_regeneration_attempts_made}</Paragraph>
                  
-                 <Divider>Image Content Descriptions (from Moondream, if present in context)</Divider>
-                 {renderImageDescriptionSlideshow(jobDetails.finalResult.generation_context_snippets_metadata || [])}
+                 <Divider>Image Content Descriptions (from Moondream)</Divider>
+                 {/* Use generation_context_snippets_for_display for image descriptions from the context used to generate the question */}
+                 {renderImageDescriptionSlideshow(jobDetails.finalResult.generation_context_snippets_for_display || [])}
 
                  <Divider>Context Snippets (Used for Final Question)</Divider>
-                 <Title level={5}>Generation Context (Top 5):</Title>
-                 {renderContextSnippets(jobDetails.finalResult.generation_context_snippets_metadata?.slice(0,5), "final-gen")}
+                 <Title level={5}>Generation Context (Top 5 shown):</Title>
+                 {renderContextSnippets(jobDetails.finalResult.generation_context_snippets_for_display?.slice(0,5), "final-gen-ctx")}
                  
-                 {jobDetails.finalResult.answerability_context_snippets_metadata && jobDetails.finalResult.answerability_context_snippets_metadata.length > 0 && (
+                 {jobDetails.finalResult.answerability_context_snippets_for_display && jobDetails.finalResult.answerability_context_snippets_for_display.length > 0 && (
                     <>
-                    <Title level={5} style={{marginTop: 20}}>Answerability Context (Top 5):</Title>
-                    {renderContextSnippets(jobDetails.finalResult.answerability_context_snippets_metadata?.slice(0,5), "final-ans")}
+                    <Title level={5} style={{marginTop: 20}}>Answerability Context (Top 5 shown):</Title>
+                    {renderContextSnippets(jobDetails.finalResult.answerability_context_snippets_for_display?.slice(0,5), "final-ans-ctx")}
                     </>
                  )}
                  
